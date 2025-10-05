@@ -94,3 +94,11 @@ def root():
 # -------------------------------
 # Required for Vercel to detect the app
 handler = app
+
+
+if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", 10000))
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
+
