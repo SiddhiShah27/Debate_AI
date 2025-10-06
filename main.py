@@ -1,78 +1,38 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, Request
 from transformers import pipeline
-import os
+import torch
 
 app = FastAPI()
 
-# ==========================================================
-# LIGHTWEIGHT MODEL (tiny or distilled variant)
-# ==========================================================
-# Using 'distilbert-base-uncased' instead of sentiment fine-tuned one
-# since the latter consumes extra memory on Render Free Tier.
+# ✅ Use a lightweight sentiment model that works well on CPU
+MODEL_NAME = "distilbert-base-uncased-finetuned-sst-2-english"
 
-MODEL_NAME = "distilbert-base-uncased"
+device = 0 if torch.cuda.is_available() else -1
+moderation_pipeline = pipeline("text-classification", model=MODEL_NAME, device=device)
 
-try:
-    print("✅ Loading lightweight model...")
-    classifier = pipeline("text-classification", model=MODEL_NAME, device=-1)
-except Exception as e:
-    print("⚠️ Model load failed:", e)
-    print("Falling back to tiny model.")
-    classifier = pipeline("text-classification", model="sshleifer/tiny-distilbert-base-uncased-finetuned-sst-2-english", device=-1)
+@app.get("/")
+def home():
+    return {"message": "Debate Moderation API is live!"}
 
-# ==========================================================
-# Request schema
-# ==========================================================
-class Message(BaseModel):
-    text: str
+@app.post("/moderate/")
+async def moderate_text(request: Request):
+    data = await request.json()
+    text = data.get("text", "")
 
-
-# ==========================================================
-# Analysis logic
-# ==========================================================
-def analyze_message(text: str):
-    if not text.strip():
-        return {"label": "neutral", "score": 0.0, "action": "NONE"}
+    if not text:
+        return {"error": "No text provided"}
 
     try:
-        result = classifier(text[:256])[0]  # shorter input
-        label = result.get("label", "").lower()
-        score = float(result.get("score", 0))
+        result = moderation_pipeline(text[:500])  # limit input length
+        label = result[0]["label"].lower()
 
         if "toxic" in label or "negative" in label:
-            action = "REMOVE"
-        elif "warning" in label or "rude" in label:
-            action = "WARN"
+            action = "warn"
+        elif "neutral" in label or "positive" in label:
+            action = "allow"
         else:
-            action = "NONE"
+            action = "allow"
 
-        return {"label": label, "score": score, "action": action}
+        return {"text": text, "action": action, "label": label}
     except Exception as e:
-        print("Error during analysis:", e)
-        return {"label": "neutral", "score": 0.0, "action": "NONE"}
-
-
-# ==========================================================
-# Routes
-# ==========================================================
-@app.get("/")
-def root():
-    return {"status": "OK", "message": "DebateX AI Moderation API running ✅"}
-
-
-@app.post("/analyze/")
-def analyze_text(message: Message):
-    result = analyze_message(message.text)
-    return {"text": message.text, "result": result}
-
-
-# ==========================================================
-# Render Entrypoint (with dynamic port binding)
-# ==========================================================
-if __name__ == "__main__":
-    import uvicorn
-
-    port = int(os.environ.get("PORT", 10000))
-    print(f"🚀 Starting server on port {port}")
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+        return {"error": str(e)}
