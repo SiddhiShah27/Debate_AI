@@ -1,104 +1,78 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from transformers import pipeline
-from collections import deque
-import datetime
+import os
 
-# Initialize FastAPI app
-app = FastAPI(title="Debate Moderation API - Vercel Ready")
+app = FastAPI()
 
-# Enable CORS (important for frontend integration)
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins (for testing/demo)
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ==========================================================
+# LIGHTWEIGHT MODEL (tiny or distilled variant)
+# ==========================================================
+# Using 'distilbert-base-uncased' instead of sentiment fine-tuned one
+# since the latter consumes extra memory on Render Free Tier.
 
-# -------------------------------
-# Load lightweight model
-# -------------------------------
-# Using DistilBERT sentiment analysis as a base model
-# (You can later switch to a fine-tuned debate model)
-moderation_model = pipeline("sentiment-analysis")
+MODEL_NAME = "distilbert-base-uncased"
 
-# Rolling buffer for short-term transcript context
-context_buffer = deque(maxlen=5)
+try:
+    print("✅ Loading lightweight model...")
+    classifier = pipeline("text-classification", model=MODEL_NAME, device=-1)
+except Exception as e:
+    print("⚠️ Model load failed:", e)
+    print("Falling back to tiny model.")
+    classifier = pipeline("text-classification", model="sshleifer/tiny-distilbert-base-uncased-finetuned-sst-2-english", device=-1)
 
-
-# -------------------------------
-# Request Schema
-# -------------------------------
-class ModerationRequest(BaseModel):
+# ==========================================================
+# Request schema
+# ==========================================================
+class Message(BaseModel):
     text: str
-    user: str | None = None
 
 
-# -------------------------------
-# Helper to classify toxicity
-# -------------------------------
-def classify_toxicity(text: str):
-    result = moderation_model(text, truncation=True)[0]
-    label = result["label"].lower()
-    score = result["score"]
+# ==========================================================
+# Analysis logic
+# ==========================================================
+def analyze_message(text: str):
+    if not text.strip():
+        return {"label": "neutral", "score": 0.0, "action": "NONE"}
 
-    # Simplified classification logic
-    if label == "negative" and score > 0.8:
-        level = "high"
-        action = "remove"
-    elif label == "negative" and score > 0.5:
-        level = "medium"
-        action = "mute"
-    elif label == "negative":
-        level = "low"
-        action = "warn"
-    else:
-        level = "none"
-        action = "none"
+    try:
+        result = classifier(text[:256])[0]  # shorter input
+        label = result.get("label", "").lower()
+        score = float(result.get("score", 0))
 
-    return level, action, round(score, 3), label
+        if "toxic" in label or "negative" in label:
+            action = "REMOVE"
+        elif "warning" in label or "rude" in label:
+            action = "WARN"
+        else:
+            action = "NONE"
 
-
-# -------------------------------
-# API Endpoint: Moderate Text
-# -------------------------------
-@app.post("/moderate")
-def moderate_text(req: ModerationRequest):
-    context_buffer.append(req.text)
-    level, action, score, label = classify_toxicity(req.text)
-
-    return {
-        "user": req.user or "unknown",
-        "text": req.text,
-        "level": level,
-        "action": action,
-        "score": score,
-        "label": label,
-        "context": list(context_buffer),
-        "timestamp": datetime.datetime.now().isoformat(),
-    }
+        return {"label": label, "score": score, "action": action}
+    except Exception as e:
+        print("Error during analysis:", e)
+        return {"label": "neutral", "score": 0.0, "action": "NONE"}
 
 
-# -------------------------------
-# Root Endpoint
-# -------------------------------
+# ==========================================================
+# Routes
+# ==========================================================
 @app.get("/")
 def root():
-    return {"message": "Debate Moderation API is live 🚀"}
+    return {"status": "OK", "message": "DebateX AI Moderation API running ✅"}
 
 
-# -------------------------------
-# Vercel handler export
-# -------------------------------
-# Required for Vercel to detect the app
-handler = app
+@app.post("/analyze/")
+def analyze_text(message: Message):
+    result = analyze_message(message.text)
+    return {"text": message.text, "result": result}
 
 
+# ==========================================================
+# Render Entrypoint (with dynamic port binding)
+# ==========================================================
 if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 10000))
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
 
+    port = int(os.environ.get("PORT", 10000))
+    print(f"🚀 Starting server on port {port}")
+    uvicorn.run("main:app", host="0.0.0.0", port=port)

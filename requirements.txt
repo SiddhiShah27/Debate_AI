@@ -1,9 +1,5 @@
-fastapi
-uvicorn
+fastapi==0.118.0
+uvicorn==0.37.0
 transformers==4.45.2
-torch==2.5.1
---extra-index-url https://download.pytorch.org/whl/cpu
-sentence-transformers==3.2.0
-scikit-learn
-numpy
-pandas
+torch==2.3.1
+pydantic==2.11.10
